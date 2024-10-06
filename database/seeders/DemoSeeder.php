@@ -5,7 +5,7 @@ namespace Database\Seeders;
 use Database\Factories\ProfileFactory;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
-use App\Models\{Profile, User};
+use App\Models\{Post, Profile, User};
 
 
 class DemoSeeder extends Seeder
@@ -15,7 +15,10 @@ class DemoSeeder extends Seeder
      */
     public function run(): void
     {
-        // User HasOne Profile
-        $user = User::factory()->has(Profile::factory())->create();
+        // User HasOne Profile, Many Profile
+        $user = User::factory()
+            ->has(Profile::factory())
+            ->has(Post::factory()->count(5))
+            ->create();
     }
 }
