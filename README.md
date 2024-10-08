@@ -8,8 +8,8 @@ https://laravel.com/docs/11.x/eloquent-relationships#aggregating-related-models
 - One to Many
 - Many to Many
 - Has Many Through
-- Polymorphic Relations
-- Many to Many Polymorphic Relations
+- Polymorphic One to Many 
+- Polymorphic Many to Many
 
 ## One to One - HasOne / BelongTo
 
@@ -159,7 +159,6 @@ Migration:
         });
         
         Schema::create('post_tag', function (Blueprint $table) {
-            $table->id();
             $table->foreignIdFor(Post::class)->constrained()->onDelete('cascade');
             $table->foreignIdFor(Tag::class)->constrained()->onDelete('cascade');
             $table->timestamps();
@@ -247,7 +246,7 @@ Migration:
         });
 
         Schema::table('users', function (Blueprint $table) {
-            $table->foreignIdFor(Affiliation::class)->constrained();
+            $table->foreignIdFor(Affiliation::class)->nullable()->constrained();
         });
 ```
 
@@ -276,4 +275,228 @@ DB::getQueryLog();
       ],
       "time" => 0.52,
     ],
+```
+
+## Polymorphic One to Many -  MorphTo / MorphMany
+
+> Une Note peut concerner un Post ou un User<br>
+> Note MorphTo Post::class, Note MorphTo User::class<br>
+> User MorphMany(Note::class, 'noteable'), Post MorphMany(Note::class, 'noteable') <br>
+> MorphTo (hasMany polymorphic) / MorphMany (belongsToMany polymorphic)
+
+![img.png](documentation/images/morph_to.png)
+![img_1.png](documentation/images/morph_to_rows.png)
+
+Possible d'ignorer l'espace de nom:
+```php
+// app/Providers/AppServiceProvider.php
+        Relation::morphMap([
+            'user' => 'App\Models\User', // noteable_type = user
+            'post' => 'App\Models\Post', // noteable_type = post
+        ]);
+```
+
+Migration:
+```php
+        Schema::create('notes', function (Blueprint $table) {
+            $table->id();
+            $table->text('text');
+            $table->morphs('noteable');
+            $table->timestamps();
+        });
+```
+Models:
+```php
+// App\Models\Note
+    /**
+     * Get the parent commentable model (post or user).
+     */
+    public function noteable(): MorphTo
+    {
+        return $this->morphTo();
+    }
+
+// App\Models\Post
+    public function notes(): MorphMany
+    {
+        return $this->morphMany(Note::class, 'noteable');
+    }
+    
+// App\Models\User
+    public function notes(): MorphMany
+    {
+        return $this->morphMany(Note::class, 'noteable');
+    }
+```
+
+Utilisation:
+```php
+use App\Models\{Note, User};
+use Illuminate\Database\Eloquent\Builder;
+
+$notes = Note::with('noteable')->get();
+$notes->first()->noteable;
+
+// Les notes concernant un User
+$note_users = Note::whereHasMorph('noteable', ['App\Models\User']);
+dump($note_users->pluck('text')->toArray());
+
+// Les notes qui concernant un utilisateur affilié aux libéraux
+$note_user_liberal = Note::whereHasMorph(
+    'noteable',
+    ['App\Models\User'],
+    function(Builder $query) {
+        $query->whereHas('affiliation', function(Builder $query) {
+            $query->where('name', 'liberal');
+        });
+    }
+    )->get();
+dump($note_user_liberal->pluck('text')->toArray());
+
+// Les notes qui concernant un utilisateur affilié aux conservateurs
+$note_user_conservative = Note::whereHasMorph(
+    'noteable',
+    ['App\Models\User'],
+    function(Builder $query) {
+        $query->whereHas('affiliation', function(Builder $query) {
+            $query->where('name', 'conservative');
+        });
+    }
+)->get();
+dump($note_user_conservative->pluck('text')->toArray());
+
+// Rechercher sur tous les modèles associés
+$notes_with_text_conservateur = Note::whereHasMorph('noteable', '*', function(Builder $query) {
+    $query->where('text', 'like', '%conservateur%');
+})->get();
+dump($notes_with_text_conservateur->pluck('text')->toArray());
+
+// Les utilisateurs ayant au moins une note
+$users = User::withCount('notes')->having('notes_count', '>', 0)->get();
+dump($users->pluck('name')->toArray());
+
+// Assigner une note à un utilisateur
+$user = User::factory()->create();
+dump($user->notes->count()); // (1)
+
+$user->notes()->create([
+    'text' => 'Cet utilisateur est un libéral.',
+]);
+$user->refresh(); // il faut refresh SI on a déjà chargé la relation (1)
+dump($user->notes->pluck('text')->toArray()); // (2)
+
+$note = Note::factory()->make();
+$user->notes()->save($note);
+$user->refresh(); // il faut refresh SI on a déjà chargé la relation (2)
+dump($user->notes->pluck('text')->toArray());
+
+$user = User::factory()->create();
+$note_for_user = Note::create(['text' => 'Rien de particulier', 'noteable_type' => User::class, 'noteable_id' => $user->id]);
+```
+
+
+## Polymorphic Many to Many - morphedByMany / morphToMany
+
+> Un utilisateur peut liker un Post ou une Video
+> Equivalent Many to Many avec un polymorphe (likable_type, likable_id)
+
+![img.png](documentation/images/morph_many_to_many.png)
+![img.png](documentation/images/morph_many_to_many_rows.png)
+
+Migration:
+```php
+        Schema::create('likables', function (Blueprint $table) {
+            $table->foreignIdFor(User::class)->constrained();
+            $table->morphs('likable');
+            $table->timestamps();
+            $table->unique(['user_id', 'likable_type', 'likable_id']);
+        });
+```
+
+Models:
+```php
+//App\Models\User
+    public function likedposts(): MorphToMany
+    {
+        return $this->morphedByMany(Post::class, 'likable');
+    }
+
+    public function likedvideos(): MorphToMany
+    {
+        return $this->morphedByMany(Video::class, 'likable');
+    }
+    
+//App\Models\Post
+    public function like($user = null): void
+    {
+        $user = $user ?? auth()->user();
+        $this->likes()->attach($user);
+    }
+
+    public function likes(): MorphToMany
+    {
+        return $this->morphToMany(User::class, 'likable');
+    }
+    
+//App\Models\Video
+    public function like($user = null): void
+    {
+        $user = $user ?? auth()->user();
+        $this->likes()->attach($user);
+    }
+
+    public function likes(): MorphToMany
+    {
+        return $this->morphToMany(User::class, 'likable');
+    }
+```
+
+On peut utiliser un trait pour factoriser les fonctions like() et likes() 
+```php
+// app/Traits/Likable.php
+namespace App\Traits;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
+
+trait Likable {
+
+    public function like($user = null): void
+    {
+        $user = $user ?? auth()->user();
+        $this->likes()->attach($user);
+    }
+
+    public function likes(): MorphToMany
+    {
+        return $this->morphToMany(User::class, 'likable')->withTimestamps();
+    }
+}
+
+
+//App\Models\Post
+use App\Traits\Likable;
+
+class Post extends Model
+{
+    use Likable;
+}
+    
+//App\Models\Video
+class Video extends Model
+{
+    use Likable;
+}
+
+```
+
+Utilisation:<br>
+Ca fonctionne comme pour la relation Many to Many à la différence que l'on passe un Modèle plutôt qu'un id.
+```php
+$user = User::factory()->create();
+$post = Post::factory()->create(['user_id' => User::factory()->create()]);
+$video = Video::factory()->create();
+
+$post->likes()->attach($user);
+$video->likes()->attach($user);
 ```
